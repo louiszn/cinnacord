@@ -1,12 +1,11 @@
-import Client from "../Client.js";
-
-import Shard from "./Shard.js";
+import { Client } from "../Client.js";
+import { Shard } from "./Shard.js";
 
 import sleep from "../utils/sleep.js";
 
 import { ReadyStates } from "../constants/client.js";
 
-class ShardManager extends Map<number, Shard> {
+export class ShardManager extends Map<number, Shard> {
 	public constructor(public client: Client) {
 		super();
 	}
@@ -19,6 +18,8 @@ class ShardManager extends Map<number, Shard> {
 		const shard = new Shard(this, id);
 
 		shard.on("ready", () => {
+			shard["debug"]("Ready!");
+
 			for (const [_, shard] of this.entries()) {
 				if (shard.readyState !== ReadyStates.Ready) {
 					return;
@@ -30,6 +31,14 @@ class ShardManager extends Map<number, Shard> {
 		});
 
 		shard.init();
+		this.set(id, shard);
+
+		this.debug(`Created shard '${id}'.`);
+		this.client.emit("shardCreate", shard);
+	}
+
+	private debug(...messages: string[]) {
+		this.client.emit("debug", `[ShardManager] ${messages.join(" ")}`);
 	}
 
 	public async connect() {
@@ -39,5 +48,3 @@ class ShardManager extends Map<number, Shard> {
 		}
 	}
 }
-
-export default ShardManager;

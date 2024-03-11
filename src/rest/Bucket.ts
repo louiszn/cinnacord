@@ -6,7 +6,7 @@ export interface RequestEntry {
 	payload?: any;
 }
 
-class Bucket {
+export class Bucket {
 	public limit = -1;
 	public remaining = -1;
 	public resetAt = -1;
@@ -14,5 +14,3 @@ class Bucket {
 
 	public constructor(public route: string) {}
 }
-
-export default Bucket;

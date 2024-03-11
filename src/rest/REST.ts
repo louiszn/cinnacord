@@ -1,15 +1,18 @@
 import EventEmitter from "node:events";
-import pkg from "../utils/package.js";
-import Bucket, { RequestEntry } from "./Bucket.js";
-import sleep from "../utils/sleep.js";
+
+import { Bucket, RequestEntry } from "./Bucket.js";
+
 import HttpError from "../errors/HttpError.js";
+
+import sleep from "../utils/sleep.js";
+import pkg from "../utils/package.js";
 import { Entry } from "../utils/Queue.js";
 
-const userAgent = `DiscordBot (https://github.com/louiszn/cinnacord, ${pkg.version})`;
+export const buckets = new Map<string, Bucket>();
 
-const buckets = new Map<string, Bucket>();
+export const userAgent = `DiscordBot (https://github.com/louiszn/cinnacord, ${pkg.version})`;
 
-class REST extends EventEmitter {
+export class REST extends EventEmitter {
 	public constructor(public token: string) {
 		super();
 	}
@@ -40,7 +43,7 @@ class REST extends EventEmitter {
 			buckets.set(route, bucket);
 		}
 
-		const entry = bucket.queue.add({ 
+		const entry = bucket.queue.add({
 			method,
 			endpoint,
 			payload,
@@ -104,5 +107,3 @@ class REST extends EventEmitter {
 			.replace(/\/webhooks\/:id\/[^/?]+/, "/webhooks/:id/:token");
 	}
 }
-
-export default REST;
