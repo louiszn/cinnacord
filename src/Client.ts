@@ -4,7 +4,6 @@ import { REST } from "./rest/REST.js";
 import { ShardManager } from "./sharding/ShardManager.js";
 
 import { ReadyStates } from "./constants/client.js";
-import maskToken from "./utils/maskToken.js";
 
 export interface ClientOptions {
 	token: string;
@@ -31,10 +30,22 @@ export class Client extends EventEmitter {
 		this.rest = new REST(options.token);
 	}
 
-	public connect() {
-		const { token } = this.options;
-		this.debug(`Using '${maskToken(token)}' as authentication.`);
-		this.shards.connect();
+	public async connect() {
+		await this.shards["connect"]();
+
+		return await new Promise<this>((resolve) => {
+			this.once("ready", resolve);
+		});
+	}
+
+	public get latency() {
+		let sum = 0;
+
+		for (const [_, shard] of this.shards) {
+			sum += shard.latency;
+		}
+
+		return sum / this.shards.size;
 	}
 
 	private debug(...messages: string[]) {

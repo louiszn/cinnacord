@@ -1,5 +1,5 @@
 class DiscordError extends Error {
-	public constructor(code: number, message: string) {
+	public constructor(public code: number, message: string) {
 		super(message);
 		this.name = `${DiscordError.name}(${code})`;
 	}

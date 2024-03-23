@@ -5,12 +5,11 @@ import { Bucket, RequestEntry } from "./Bucket.js";
 import HttpError from "../errors/HttpError.js";
 
 import sleep from "../utils/sleep.js";
-import pkg from "../utils/package.js";
 import { Entry } from "../utils/Queue.js";
 
 export const buckets = new Map<string, Bucket>();
 
-export const userAgent = `DiscordBot (https://github.com/louiszn/cinnacord, ${pkg.version})`;
+export const userAgent = `DiscordBot (https://github.com/louiszn/cinnacord, 0.0.1)`;
 
 export class REST extends EventEmitter {
 	public constructor(public token: string) {
@@ -95,8 +94,20 @@ export class REST extends EventEmitter {
 			return await res.json();
 		} else if (res.status === 429) {
 			return await this.makeRequest(bucket, entry);
-		} else {
-			throw new HttpError(status, statusText + ".");
+		}
+
+		this.error(status, `${statusText}.`);
+	}
+
+	private error(status: number, statusText: string) {
+		switch (status) {
+			default: {
+				throw new HttpError(status, statusText);
+			}
+
+			case 401: {
+				throw new Error("An invalid token was provided.");
+			}
 		}
 	}
 
