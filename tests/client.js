@@ -11,35 +11,35 @@ const client = new Client({
 
 client.on("debug", console.log);
 
-client.on("raw", async ({ data, name }) => {
-	if (name === "MESSAGE_CREATE") {
-		if (data.author.bot) {
+client.on("raw", async ({ t, d }) => {
+	if (t === "MESSAGE_CREATE") {
+		if (d.author.bot) {
 			return;
 		}
 
-		if (data.content === "!ping") {
-			await client.rest.post(`/channels/${data.channel_id}/messages`, {
+		if (d.content === "!ping") {
+			await client.rest.post(`/channels/${d.channel_id}/messages`, {
 				content: `Pong! ${client.latency}ms!`,
 			});
 		}
 
-		if (data.content === "!avatar") {
+		if (d.content === "!avatar") {
 			const embed = {
 				author: { name: data.author.username },
 				image: {
-					url: `https://cdn.discordapp.com/avatars/${data.author.id}/${data.author.avatar}.png?size=4096`,
+					url: `https://cdn.discordapp.com/avatars/${d.author.id}/${d.author.avatar}.png?size=4096`,
 				},
 			};
 
-			await client.rest.post(`/channels/${data.channel_id}/messages`, {
+			await client.rest.post(`/channels/${d.channel_id}/messages`, {
 				embeds: [embed],
 			});
 		}
 
-		if (data.content === "!disconnect") {
+		if (d.content === "!disconnect") {
 			client.shards.get(0).disconnect();
 
-			await client.rest.post(`/channels/${data.channel_id}/messages`, {
+			await client.rest.post(`/channels/${d.channel_id}/messages`, {
 				content: "Websocket disconnected.",
 			});
 		}
