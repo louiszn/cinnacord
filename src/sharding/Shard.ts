@@ -10,10 +10,16 @@ import { CloseEventCodes, Opcodes } from "../constants/gateway.js";
 import { ReadyStates } from "../constants/client.js";
 import CinnacordError from "../errors/CinnacordError.js";
 
+import type { Inflate } from "zlib-sync";
+
+const zlib = await import("zlib-sync").then((pkg) => pkg.default).catch(() => null);
+
 const getGatewayRatelimiting = () => ({
 	remaining: 110,
 	resetAt: Date.now() + 60_000,
 });
+
+const textDecoder = new TextDecoder();
 
 export class Shard extends EventEmitter {
 	public ws!: WebSocket;
@@ -26,10 +32,13 @@ export class Shard extends EventEmitter {
 	#lastHeartbeatSent = -1;
 	#lastHeartbeatReceived = -1;
 	#heartbeatInterval: NodeJS.Timeout | null = null;
+	#connectTimeout: NodeJS.Timeout | null = null;
 
 	#rateLimit = getGatewayRatelimiting();
 	#sendQueue = new Queue<{ op: Opcodes; d: any }>();
 	#lastIdentify = -1;
+
+	#inflate: Inflate | null = null;
 
 	public constructor(
 		public manager: ShardManager,
@@ -65,20 +74,21 @@ export class Shard extends EventEmitter {
 
 		this.readyState = ReadyStates.Connecting;
 
-		const gatewayUrl = `${this.manager.gatewayBot.url}?v=10&encoding=json`;
+		const params = new URLSearchParams({ v: "10", encoding: "json" });
 
-		if (this.#sessionId) {
-			if (!this.#resumeURL) {
-				this.emit(
-					"warn",
-					"Resume url is not currently present. Discord may disconnect you quicker.",
-				);
-			}
+		if (zlib) {
+			params.append("compress", "zlib-stream");
 
-			this.ws = new WebSocket(this.#resumeURL || gatewayUrl);
-		} else {
-			this.ws = new WebSocket(gatewayUrl);
+			this.#inflate = new zlib.Inflate({
+				chunkSize: 128 * 1024,
+			});
+
+			this.debug("zlib-sync detected. Using compression mode.");
 		}
+
+		const gatewayUrl = `${this.#resumeURL || this.manager.gatewayBot.url}?${params}`;
+
+		this.ws = new WebSocket(gatewayUrl);
 
 		this.ws.once("open", () => {
 			this.debug("Websocket opened.");
@@ -88,15 +98,29 @@ export class Shard extends EventEmitter {
 		this.ws.on("message", this.#handleMessage.bind(this));
 		this.ws.on("error", this.#handleError.bind(this));
 		this.ws.on("close", this.#handleClose.bind(this));
+
+		this.#connectTimeout = setTimeout(() => {
+			if (!this.isReady()) {
+				this.disconnect();
+				throw new Error("Connection timed out.");
+			}
+		}, 15_000);
 	}
 
-	async #handleMessage(message: WebSocket.RawData) {
-		const data = JSON.parse(message.toString());
-		const { d, op } = data;
+	async #handleMessage(data: WebSocket.RawData) {
+		const payload = this.#unpack(data);
+
+		if (!payload) {
+			return;
+		}
+
+		this.manager.client.emit("raw", payload);
+
+		const { d, op } = payload;
 
 		switch (op) {
 			case Opcodes.Dispatch: {
-				await this.#handleDispatch(data);
+				await this.#handleDispatch(payload);
 				break;
 			}
 
@@ -117,13 +141,32 @@ export class Shard extends EventEmitter {
 			}
 
 			case Opcodes.InvalidSession: {
+				if (d && this.#sessionId) {
+					await this.#resume();
+				} else {
+					this.#sessionId = null;
+					this.#resumeURL = null;
+					await this.#identify();
+				}
+
+				break;
+			}
+
+			case Opcodes.Reconnect: {
+				this.#close();
+				this.connect();
+				break;
+			}
+
+			case Opcodes.Resume: {
+				this.emit("debug", "Successfully resumed the client.");
 				break;
 			}
 		}
 	}
 
-	async #handleDispatch(data: any) {
-		const { t, s, d } = data;
+	async #handleDispatch(payload: any) {
+		const { t, s, d } = payload;
 
 		this.#sequence = s;
 
@@ -135,11 +178,15 @@ export class Shard extends EventEmitter {
 				this.debug("Ready.");
 
 				this.emit("ready");
+
+				if (this.#connectTimeout) {
+					clearTimeout(this.#connectTimeout);
+					this.#connectTimeout = null;
+				}
+
 				break;
 			}
 		}
-
-		this.manager.client.emit("raw", { name: t, data: d });
 	}
 
 	#handleError(error: Error) {
@@ -234,16 +281,7 @@ export class Shard extends EventEmitter {
 		}
 
 		if (reconnect) {
-			if (this.#sessionId) {
-				if (this.ws.readyState === WebSocket.OPEN) {
-					this.ws.close(4901);
-				} else {
-					this.ws.terminate();
-				}
-			} else {
-				this.disconnect();
-			}
-
+			this.#close();
 			this.connect();
 		} else {
 			this.disconnect();
@@ -293,13 +331,62 @@ export class Shard extends EventEmitter {
 		this.#lastIdentify = -1;
 	}
 
+	#unpack(data: WebSocket.Data) {
+		const decompressable = new Uint8Array(data as Buffer);
+
+		if (!this.#inflate) {
+			const pack = Buffer.from(decompressable);
+			return JSON.parse(pack.toString());
+		}
+
+		const l = decompressable.length;
+		const flush =
+			decompressable[l - 4] === 0x00 &&
+			decompressable[l - 3] === 0x00 &&
+			decompressable[l - 2] === 0xff &&
+			decompressable[l - 1] === 0xff;
+
+		const { Z_SYNC_FLUSH, Z_NO_FLUSH } = zlib!;
+
+		this.#inflate.push(Buffer.from(decompressable), flush ? Z_SYNC_FLUSH : Z_NO_FLUSH);
+
+		const { err, result } = this.#inflate;
+
+		if (err) {
+			this.emit("error", this.#inflate.msg || "");
+			return null;
+		}
+
+		if (flush && result) {
+			const pack = Buffer.from(result);
+			return JSON.parse(textDecoder.decode(pack));
+		}
+
+		return null;
+	}
+
+	#close() {
+		if (!this.ws) {
+			return;
+		}
+
+		if (this.#sessionId) {
+			if (this.ws.readyState === WebSocket.OPEN) {
+				this.ws.close(4901);
+			} else {
+				this.ws.terminate();
+			}
+		} else {
+			this.ws.close(1000);
+		}
+	}
+
 	disconnect() {
 		this.readyState = ReadyStates.Disconnecting;
 
-		this.#reset();
-
 		this.ws.removeAllListeners();
-		this.ws.close(1001);
+		this.#close();
+		this.#reset();
 
 		delete (this as any).ws;
 
