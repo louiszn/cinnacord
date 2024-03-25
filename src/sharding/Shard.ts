@@ -19,8 +19,6 @@ const getGatewayRatelimiting = () => ({
 	resetAt: Date.now() + 60_000,
 });
 
-const textDecoder = new TextDecoder();
-
 export class Shard extends EventEmitter {
 	public ws!: WebSocket;
 	public readyState = ReadyStates.Disconnected;
@@ -38,7 +36,10 @@ export class Shard extends EventEmitter {
 	#sendQueue = new Queue<{ op: Opcodes; d: any }>();
 	#lastIdentify = -1;
 
+	// https://discord.com/developers/docs/topics/gateway#transport-compression
+	// "However, each Gateway connection should use its own unique zlib context."
 	#inflate: Inflate | null = null;
+	#textDecoder = new TextDecoder();
 
 	public constructor(
 		public manager: ShardManager,
@@ -74,19 +75,19 @@ export class Shard extends EventEmitter {
 
 		this.readyState = ReadyStates.Connecting;
 
-		const params = new URLSearchParams({ v: "10", encoding: "json" });
+		const { version, compress, url } = this.manager.client.options.ws!;
 
-		if (zlib) {
+		const params = new URLSearchParams({ v: `${version}`, encoding: "json" });
+
+		if (compress && zlib) {
 			params.append("compress", "zlib-stream");
 
 			this.#inflate = new zlib.Inflate({
 				chunkSize: 128 * 1024,
 			});
-
-			this.debug("zlib-sync detected. Using compression mode.");
 		}
 
-		const gatewayUrl = `${this.#resumeURL || this.manager.gatewayBot.url}?${params}`;
+		const gatewayUrl = `${this.#resumeURL || url}?${params}`;
 
 		this.ws = new WebSocket(gatewayUrl);
 
@@ -126,6 +127,7 @@ export class Shard extends EventEmitter {
 
 			case Opcodes.Hello: {
 				await this.#identify();
+				await sleep(Math.random() * d.heartbeat_interval);
 				await this.#sendHeartbeat();
 
 				this.#heartbeatInterval = setInterval(() => {
@@ -153,7 +155,7 @@ export class Shard extends EventEmitter {
 			}
 
 			case Opcodes.Reconnect: {
-				this.#close();
+				this.#closeConnection();
 				this.connect();
 				break;
 			}
@@ -281,7 +283,7 @@ export class Shard extends EventEmitter {
 		}
 
 		if (reconnect) {
-			this.#close();
+			this.#closeConnection();
 			this.connect();
 		} else {
 			this.disconnect();
@@ -295,15 +297,30 @@ export class Shard extends EventEmitter {
 	}
 
 	async #identify() {
-		await this.send(Opcodes.Identify, {
-			token: this.manager.client.options.token,
-			intents: this.manager.client.options.intents,
+		const { maxShards } = this.manager.options;
+		const { ws, sharding, token, intents } = this.manager.client.options;
+
+		const payload: any = {
+			token,
+			intents,
 			properties: {
 				os: "linux",
 				browser: "Cinnacord",
 				device: "Cinnacord",
 			},
-		});
+		};
+
+		if (ws!.compress && zlib) {
+			payload.compress = true;
+		}
+
+		if (sharding && maxShards > 0) {
+			payload.shard = [this.id, maxShards];
+		}
+
+		console.log(payload);
+
+		await this.send(Opcodes.Identify, payload);
 	}
 
 	async #resume() {
@@ -332,23 +349,25 @@ export class Shard extends EventEmitter {
 	}
 
 	#unpack(data: WebSocket.Data) {
-		const decompressable = new Uint8Array(data as Buffer);
+		const message = new Uint8Array(data as Buffer);
 
 		if (!this.#inflate) {
-			const pack = Buffer.from(decompressable);
+			const pack = Buffer.from(message);
 			return JSON.parse(pack.toString());
 		}
 
-		const l = decompressable.length;
+		const { length } = message;
+
 		const flush =
-			decompressable[l - 4] === 0x00 &&
-			decompressable[l - 3] === 0x00 &&
-			decompressable[l - 2] === 0xff &&
-			decompressable[l - 1] === 0xff;
+			length >= 4 &&
+			message[length - 4] === 0x00 &&
+			message[length - 3] === 0x00 &&
+			message[length - 2] === 0xff &&
+			message[length - 1] === 0xff;
 
 		const { Z_SYNC_FLUSH, Z_NO_FLUSH } = zlib!;
 
-		this.#inflate.push(Buffer.from(decompressable), flush ? Z_SYNC_FLUSH : Z_NO_FLUSH);
+		this.#inflate.push(Buffer.from(message), flush ? Z_SYNC_FLUSH : Z_NO_FLUSH);
 
 		const { err, result } = this.#inflate;
 
@@ -359,36 +378,32 @@ export class Shard extends EventEmitter {
 
 		if (flush && result) {
 			const pack = Buffer.from(result);
-			return JSON.parse(textDecoder.decode(pack));
+			return JSON.parse(this.#textDecoder.decode(pack));
 		}
 
 		return null;
 	}
 
-	#close() {
+	#closeConnection() {
 		if (!this.ws) {
 			return;
 		}
 
 		if (this.#sessionId) {
-			if (this.ws.readyState === WebSocket.OPEN) {
-				this.ws.close(4901);
-			} else {
-				this.ws.terminate();
-			}
+			this.ws.close(4901);
 		} else {
 			this.ws.close(1000);
 		}
+
+		delete (this as any).ws;
 	}
 
 	disconnect() {
 		this.readyState = ReadyStates.Disconnecting;
 
 		this.ws.removeAllListeners();
-		this.#close();
+		this.#closeConnection();
 		this.#reset();
-
-		delete (this as any).ws;
 
 		this.readyState = ReadyStates.Disconnected;
 	}
