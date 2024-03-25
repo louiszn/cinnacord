@@ -7,6 +7,8 @@ const config = {
 const client = new Client({
 	intents: GatewayIntents.Guilds | GatewayIntents.GuildMessages | GatewayIntents.MessageContent,
 	token: config.token,
+	ws: { compress: true },
+	sharding: true,
 });
 
 client.on("debug", console.log);
@@ -33,14 +35,6 @@ client.on("raw", async ({ t, d }) => {
 
 			await client.rest.post(`/channels/${d.channel_id}/messages`, {
 				embeds: [embed],
-			});
-		}
-
-		if (d.content === "!disconnect") {
-			client.shards.get(0).disconnect();
-
-			await client.rest.post(`/channels/${d.channel_id}/messages`, {
-				content: "Websocket disconnected.",
 			});
 		}
 	}
