@@ -5,10 +5,16 @@ import sleep from "../utils/sleep.js";
 
 import { ReadyStates } from "../constants/client.js";
 
-export class ShardManager extends Map<number, Shard> {
-	public gatewayBot: any;
+export interface ShardingOptions {
+	maxShards: number;
+	maxConcurrency: number;
+}
 
-	public constructor(public client: Client) {
+export class ShardManager extends Map<number, Shard> {
+	public constructor(
+		public client: Client,
+		public options: ShardingOptions,
+	) {
 		super();
 	}
 
@@ -39,7 +45,7 @@ export class ShardManager extends Map<number, Shard> {
 			}
 
 			this.client.readyState = ReadyStates.Disconnected;
-			this.client.emit("disconnect");
+			this.client.emit("disconnect", this.client);
 		});
 
 		this.set(id, shard);
@@ -53,13 +59,11 @@ export class ShardManager extends Map<number, Shard> {
 		this.client.emit("debug", `[ShardManager] ${messages.join(" ")}`);
 	}
 
-	protected async connect() {
-		this.gatewayBot = await this.client.rest.get("/gateway/bot");
+	public async connect() {
+		for (let id = 0; id < this.options.maxShards; id++) {
+			this.spawn(id);
 
-		for (let i = 0; i < 1; i++) {
-			this.spawn(i);
-
-			if (i + 1 !== 1) {
+			if (id != this.options.maxShards - 1) {
 				await sleep(5_500);
 			}
 		}
