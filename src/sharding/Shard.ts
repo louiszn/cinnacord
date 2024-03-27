@@ -6,12 +6,16 @@ import { ShardManager } from "./ShardManager.js";
 import sleep from "../utils/sleep.js";
 import { Queue } from "../utils/Queue.js";
 
-import { CloseEventCodes, Opcodes } from "../constants/gateway.js";
+import { CloseEventCodes, GatewayIntents, Opcodes } from "../constants/gateway.js";
 import { ReadyStates } from "../constants/client.js";
+
 import CinnacordError from "../errors/CinnacordError.js";
 
-import type { Inflate } from "zlib-sync";
+import { Guild } from "../structures/Guild.js";
+import { Member } from "../structures/Member.js";
+import { Message } from "../structures/Message.js";
 
+import type { Inflate } from "zlib-sync";
 const zlib = await import("zlib-sync").then((pkg) => pkg.default).catch(() => null);
 
 const getGatewayRatelimiting = () => ({
@@ -27,8 +31,8 @@ export class Shard extends EventEmitter {
 	#sessionId: string | null = null;
 	#resumeURL: string | null = null;
 
-	#lastHeartbeatSent = -1;
-	#lastHeartbeatReceived = -1;
+	#lastHeartbeatSent = Infinity;
+	#lastHeartbeatReceived = Infinity;
 	#heartbeatInterval: NodeJS.Timeout | null = null;
 	#connectTimeout: NodeJS.Timeout | null = null;
 
@@ -169,6 +173,7 @@ export class Shard extends EventEmitter {
 
 	async #handleDispatch(payload: any) {
 		const { t, s, d } = payload;
+		const { client } = this.manager;
 
 		this.#sequence = s;
 
@@ -186,6 +191,66 @@ export class Shard extends EventEmitter {
 					this.#connectTimeout = null;
 				}
 
+				break;
+			}
+
+			case "GUILD_CREATE": {
+				const guild = new Guild(client, d);
+
+				client.guilds.set(d.id, guild);
+
+				if (d.unavailable) {
+					client.emit("guildCreate", guild);
+				} else {
+					client.emit("guildAvailable", guild);
+				}
+
+				d.members.forEach((m: any) => {
+					guild.members.set(m.user.id, new Member(client, m));
+				});
+
+				await guild.shard.send(Opcodes.RequestGuildMembers, {
+					guild_id: guild.id,
+					query: "",
+					limit: 0,
+					presences: Boolean(client.options.intents & GatewayIntents.GuildPresences),
+				});
+
+				break;
+			}
+
+			case "GUILD_DELETE": {
+				const guild = client.guilds.get(d.id)!;
+				client.emit("guildDelete", guild);
+				client.guilds.delete(d.id);
+				break;
+			}
+
+			case "GUILD_MEMBERS_CHUNK": {
+				const guild = client.guilds.get(d.guild_id);
+
+				if (!guild) {
+					return;
+				}
+
+				d.members.forEach((m: any) => {
+					guild.members.set(m.user.id, new Member(client, m));
+				});
+
+				break;
+			}
+
+			case "MESSAGE_CREATE": {
+				const message = new Message(client, d);
+				client.emit("messageCreate", message);
+				break;
+			}
+
+			case "MESSAGE_DELETE": {
+				break;
+			}
+
+			case "MESSAGE_UPDATE": {
 				break;
 			}
 		}
@@ -317,8 +382,6 @@ export class Shard extends EventEmitter {
 		if (sharding && maxShards > 0) {
 			payload.shard = [this.id, maxShards];
 		}
-
-		console.log(payload);
 
 		await this.send(Opcodes.Identify, payload);
 	}

@@ -45,7 +45,7 @@ export class ShardManager extends Map<number, Shard> {
 			}
 
 			this.client.readyState = ReadyStates.Disconnected;
-			this.client.emit("disconnect");
+			this.client.emit("disconnect", this.client);
 		});
 
 		this.set(id, shard);
