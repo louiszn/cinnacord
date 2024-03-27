@@ -1,4 +1,4 @@
-import EventEmitter from "node:events";
+import EventEmitter from "./utils/EventEmitter.js";
 
 import { REST } from "./rest/REST.js";
 import { ShardManager, ShardingOptions } from "./sharding/ShardManager.js";
@@ -6,10 +6,13 @@ import { ShardManager, ShardingOptions } from "./sharding/ShardManager.js";
 import { ReadyStates } from "./constants/client.js";
 
 import { User } from "./structures/User.js";
+import { Guild } from "./structures/Guild.js";
+import { Message } from "./structures/Message.js";
+import { Shard } from "./sharding/Shard.js";
 
 export interface ClientOptions {
 	token: string;
-	intents: number | bigint;
+	intents: number;
 	ws?: ClientWebsocketOptions;
 	sharding?: ClientShardingOptions | boolean;
 }
@@ -25,11 +28,26 @@ export interface ClientWebsocketOptions {
 	compress: boolean;
 }
 
-export class Client extends EventEmitter {
+export interface ClientEvents {
+	ready: [client: Client];
+	messageCreate: [message: Message];
+	guildAvailable: [guild: Guild];
+	guildCreate: [guild: Guild];
+	guildDelete: [guild: Guild];
+	shardCreate: [shard: Shard];
+	debug: [...args: any[]];
+	disconnect: [client: Client];
+	raw: [payload: { d: any; t: string; op: number; s: number | null }];
+}
+
+export class Client extends EventEmitter<ClientEvents> {
 	public readyState = ReadyStates.Disconnected;
 
 	public rest!: REST;
 	public shards!: ShardManager;
+
+	public users = new Map<string, User>();
+	public guilds = new Map<string, Guild>();
 
 	public constructor(public options: ClientOptions) {
 		super();
@@ -90,7 +108,7 @@ export class Client extends EventEmitter {
 		await this.shards.connect();
 
 		return await new Promise<this>((resolve) => {
-			this.once("ready", resolve);
+			this.once("ready", () => resolve(this));
 		});
 	}
 
